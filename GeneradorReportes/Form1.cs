@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
-using System.Drawing; 
+using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
+using System.Drawing;
 using System.Windows.Forms;
 using ClosedXML.Excel;
 
@@ -18,15 +20,15 @@ namespace GeneradorReportes
 
         private void Form1_Load(object sender, EventArgs e)
         {
-
+            pictureBoxRuedaCargando.Visible = false;
         }
 
         private void SeleccionarArchivo(TextBox textBox)
         {
             using (OpenFileDialog openFileDialog = new OpenFileDialog())
             {
-                openFileDialog.Filter = "Archivos Excel|*.xlsx;";
-                openFileDialog.Title = "Seleccionar el archivo Excel";
+                openFileDialog.Filter = "Archivos Excel|*.xlsx;*.csv";
+                openFileDialog.Title = "Seleccionar el archivo Excel o CSV";
 
                 if (openFileDialog.ShowDialog() == DialogResult.OK)
                 {
@@ -42,22 +44,31 @@ namespace GeneradorReportes
 
         private void buttonProcesar_Click(object sender, EventArgs e)
         {
+            pictureBoxRuedaCargando.Visible = true;
 
-                var diccionario = ArmarDiccionario(textBoxExcel.Text, int.Parse(textBoxPeriodo.Text));
-                diccionario = TransformarProyectos(diccionario, int.Parse(textBoxPeriodo.Text));
+            string rutaArchivo = textBoxExcel.Text;
+            if (Path.GetExtension(rutaArchivo).ToLower() == ".csv")
+            {
+                rutaArchivo = ConvertirCsvAXlsx(rutaArchivo);
+            }
 
-                SaveFileDialog saveFileDialog = new SaveFileDialog();
-                saveFileDialog.Filter = "Archivos Excel|*.xlsx";
-                saveFileDialog.Title = "Guardar Informe como";
-                saveFileDialog.FileName = $"List. Venc. {textBoxNombre.Text}";
+            var diccionario = ArmarDiccionario(rutaArchivo, int.Parse(textBoxPeriodo.Text));
+            diccionario = TransformarProyectos(diccionario, int.Parse(textBoxPeriodo.Text));
 
-                if (saveFileDialog.ShowDialog() == DialogResult.OK)
-                {
-                    string rutaArchivo = saveFileDialog.FileName;
-                    CrearInformeExcel(diccionario, rutaArchivo, textBoxNombre.Text);
+            SaveFileDialog saveFileDialog = new SaveFileDialog();
+            saveFileDialog.Filter = "Archivos Excel|*.xlsx";
+            saveFileDialog.Title = "Guardar Informe como";
+            saveFileDialog.FileName = $"List. Venc. {textBoxNombre.Text}";
 
-                    MessageBox.Show("Proceso completado");
-                }
+            if (saveFileDialog.ShowDialog() == DialogResult.OK)
+            {
+                string rutaInforme = saveFileDialog.FileName;
+                CrearInformeExcel(diccionario, rutaInforme, textBoxNombre.Text);
+
+                MessageBox.Show("Proceso completado");
+
+                pictureBoxRuedaCargando.Visible = false;
+            }
         }
 
         static string ObtenerNombreProyecto(string input)
@@ -186,6 +197,7 @@ namespace GeneradorReportes
         {
             try
             {
+                // Verificación de la ruta del archivo
                 if (string.IsNullOrEmpty(rutaArchivo) || !rutaArchivo.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
                 {
                     throw new ArgumentException("La ruta del archivo debe tener una extensión .xlsx");
@@ -195,19 +207,28 @@ namespace GeneradorReportes
                 {
                     var worksheet = workbook.Worksheets.Add("Informe");
 
-                    var imagePath = "C:\\Users\\w1zar\\Downloads\\imagen.png";
-                    if (File.Exists(imagePath))
+                    // Ruta de la imagen desde los recursos
+                    var imageResource = Properties.Resources.imagen; // Asumiendo que la imagen está en los recursos
+                    if (imageResource != null)
                     {
-                        var image = worksheet.AddPicture(imagePath)
-                            .MoveTo(worksheet.Cell("B1"), new Point(10, 10))
-                            .Scale(0.5);
+                        using (var stream = new MemoryStream())
+                        {
+                            imageResource.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
+                            stream.Seek(0, SeekOrigin.Begin);
+                            var image = worksheet.AddPicture(stream, "imagen.png")
+                                .MoveTo(worksheet.Cell("B1"), new Point(10, 10))
+                                .Scale(0.5);
+                        }
                     }
 
+                    // Añadir nombre
                     worksheet.Cell(4, 1).Value = nombre;
                     worksheet.Cell(4, 1).Style.Font.Bold = true;
                     worksheet.Cell(4, 1).Style.Font.FontSize = 14;
                     worksheet.Cell(4, 1).Style.Alignment.Vertical = XLAlignmentVerticalValues.Bottom;
+                    worksheet.Cell(4, 1).Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
 
+                    // Encabezados de columnas
                     worksheet.Cell(8, 1).Value = "";
                     worksheet.Cell(8, 2).Value = "Asunto";
                     worksheet.Cell(8, 3).Value = "Periodo";
@@ -220,16 +241,25 @@ namespace GeneradorReportes
                     headerRange.Style.Font.FontColor = XLColor.White;
                     headerRange.Style.Font.Bold = true;
 
-                    worksheet.Columns().AdjustToContents();
+                    // Ajustar anchos de columnas
+                    worksheet.Column(1).Width = 280 / 7.5;
+                    worksheet.Column(2).Width = 250 / 7.5;
+                    worksheet.Column(3).Width = 80 / 7.5;
+                    worksheet.Column(4).Width = 80 / 7.5;
 
                     int fila = 9;
-                    int filaInicio = 9;
+                    int filaInicial = 9;
+                    int filaFinal = filaInicial;
+
+                    // Añadir datos del proyecto
                     foreach (var proyecto in proyectos)
                     {
                         if (proyecto.Value == null || proyecto.Value.Count == 0)
                         {
                             continue;
                         }
+
+                        int filaInicioProyecto = fila; // Guardar el inicio del grupo del proyecto
 
                         foreach (var (asunto, periodo, vencimiento) in proyecto.Value)
                         {
@@ -240,13 +270,16 @@ namespace GeneradorReportes
                             fila++;
                         }
 
-                        var range = worksheet.Range($"A{filaInicio}:A{fila - 1}");
-                        range.Merge();
-                        range.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-                        range.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-                        range.Style.Border.OutsideBorder = XLBorderStyleValues.Thick;
-                        range.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+                        // Combinar celdas para el nombre del proyecto
+                        var projectRange = worksheet.Range($"A{filaInicioProyecto}:A{fila - 1}");
+                        projectRange.Merge();
+                        projectRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+                        projectRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
 
+                        // Actualizar filaFinal después de agregar los datos del proyecto
+                        filaFinal = fila - 1;
+
+                        // Añadir fila de separación
                         worksheet.Cell(fila, 1).Value = " ";
                         worksheet.Cell(fila, 2).Value = " ";
                         worksheet.Cell(fila, 3).Value = " ";
@@ -254,44 +287,68 @@ namespace GeneradorReportes
 
                         var pieRange = worksheet.Range($"A{fila}:D{fila}");
                         pieRange.Style.Fill.BackgroundColor = XLColor.FromHtml("#941BB5");
-                        pieRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-                        pieRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
                         pieRange.Style.Font.FontColor = XLColor.White;
                         pieRange.Style.Font.Bold = true;
 
                         fila++;
-                        filaInicio = fila;
+                        filaInicial = fila;
                     }
 
-                    var usedRange = worksheet.Range(worksheet.Cell(8, 1), worksheet.LastCellUsed());
-                    foreach (var cell in usedRange.Cells())
+                    // Aplicar bordes interiores a todo el rango de datos al final del foreach
+                    if (filaFinal >= 9) // Verifica que se hayan añadido datos
                     {
-                        cell.Style.Border.LeftBorder = XLBorderStyleValues.Thin;
-                        cell.Style.Border.RightBorder = XLBorderStyleValues.Thin;
-                        cell.Style.Border.TopBorder = XLBorderStyleValues.Thin;
-                        cell.Style.Border.BottomBorder = XLBorderStyleValues.Thin;
+                        var dataRange = worksheet.Range($"A8:D{filaFinal + 1}");
+                        dataRange.Style.Border.OutsideBorder = XLBorderStyleValues.Thin; // Bordes exteriores finos
+                        dataRange.Style.Border.InsideBorder = XLBorderStyleValues.Thin;  // Bordes interiores finos
                     }
-
-                    worksheet.Column(1).Width = PixelsToCharacterWidth(308);
-                    worksheet.Column(2).Width = PixelsToCharacterWidth(275);
-                    worksheet.Column(3).Width = PixelsToCharacterWidth(110);
-                    worksheet.Column(4).Width = PixelsToCharacterWidth(120);
 
                     workbook.SaveAs(rutaArchivo);
                 }
-
-                Console.WriteLine("Informe creado exitosamente en: " + rutaArchivo);
+            }
+            catch (ArgumentException ex)
+            {
+                MessageBox.Show("Error en la ruta del archivo: " + ex.Message);
+            }
+            catch (IOException ex)
+            {
+                MessageBox.Show("Error de E/S: " + ex.Message);
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Ocurrió un error al crear el informe de Excel: " + ex.Message);
+                MessageBox.Show("Ocurrió un error al crear el archivo Excel: " + ex.Message);
             }
         }
 
-
-        static double PixelsToCharacterWidth(int pixels)
+        static string ConvertirCsvAXlsx(string rutaCsv)
         {
-            return (pixels / 7.0) * 0.75;
+            string rutaXlsx = Path.ChangeExtension(rutaCsv, ".xlsx");
+
+            using (var workbook = new XLWorkbook())
+            {
+                var worksheet = workbook.Worksheets.Add("Datos");
+
+                using (var reader = new StreamReader(rutaCsv, Encoding.UTF8))
+                {
+                    int fila = 1;
+                    while (!reader.EndOfStream)
+                    {
+                        var line = reader.ReadLine();
+                        var values = line.Split(';');
+
+                        for (int columna = 0; columna < values.Length; columna++)
+                        {
+                            worksheet.Cell(fila, columna + 1).Value = values[columna];
+                        }
+
+                        fila++;
+                    }
+                }
+
+                worksheet.Columns().AdjustToContents();
+                workbook.SaveAs(rutaXlsx);
+            }
+
+            return rutaXlsx;
         }
     }
 }
